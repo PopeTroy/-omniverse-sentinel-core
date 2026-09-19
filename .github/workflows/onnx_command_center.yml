@@ -18,7 +18,7 @@ on:
         default: 'models/sentinel_core.onnx'
         type: string
       quant_mode:
-        description: 'Quantization Type (for quantize_int8 action)'
+        description: 'Quantization Type'
         required: true
         default: 'dynamic'
         type: choice
@@ -81,9 +81,8 @@ jobs:
           quant_mode = '${{ github.event.inputs.quant_mode }}'
           selected_ep = '${{ github.event.inputs.execution_provider }}'
 
-          # Auto-generate a valid ONNX graph if target model is missing on runner
           if not os.path.exists(model_path):
-              print(f'[INFO] Model target path standard non-existent: {model_path}')
+              print(f'[INFO] Model target path non-existent: {model_path}')
               print(f'[GENERATING] Constructing synthetic ONNX graph at: {model_path}')
               os.makedirs(os.path.dirname(model_path) or '.', exist_ok=True)
 
@@ -95,7 +94,6 @@ jobs:
               onnx.save(model, model_path)
               print('[SUCCESS] Synthetic model graph saved successfully.')
 
-          # Defensive mapping for provider name variations
           available_eps = ort.get_available_providers()
           ep_map = {p.lower(): p for p in available_eps}
           requested_ep_lower = selected_ep.lower()
@@ -164,5 +162,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: onnx-quantized-model
-          path: models/*_int8.onnx
-p
+          path: "models/*_int8.onnx"
