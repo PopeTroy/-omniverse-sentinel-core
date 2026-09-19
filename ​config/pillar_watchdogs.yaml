@@ -1,0 +1,31 @@
+version: "1.0"
+watchdog_pillars:
+  healthcare_genomics:
+    enabled: true
+    data_stream: "kafka://cluster.local:9092/telemetry-genomics"
+    trigger_threshold: 0.85
+    onnx_models:
+      - "resnet101_anomaly_detector"
+    nim_services:
+      reasoning: "nemotron-4-340b-instruct"
+      embedding: "nv-embedqa-e5-v5"
+
+  defense_telemetry:
+    enabled: true
+    data_stream: "grpc://edge-radar.internal:50051"
+    trigger_threshold: 0.92
+    onnx_models:
+      - "yolov8_x_industry_sentinel"
+    nim_services:
+      reasoning: "llama-3-70b-instruct"
+      embedding: "nv-embedqa-e5-v5"
+
+  financial_risk:
+    enabled: true
+    data_stream: "kafka://cluster.local:9092/market-ticks"
+    trigger_threshold: 0.78
+    onnx_models:
+      - "lstm_sensor_watchdog"
+    nim_services:
+      reasoning: "mistral-large"
+      embedding: "nv-embedqa-e5-v5"
