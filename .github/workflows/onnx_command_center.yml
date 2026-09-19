@@ -63,7 +63,6 @@ jobs:
 
       - name: Configure CUDA / TensorRT Dynamic Library Paths
         run: |
-          # Locate pip-installed NVIDIA libraries and export to LD_LIBRARY_PATH for ONNX Runtime
           SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
           NV_PATHS=$(find "$SITE_PACKAGES/nvidia" -type d -name "lib" 2>/dev/null | tr '\n' ':')
           echo "LD_LIBRARY_PATH=${NV_PATHS}${LD_LIBRARY_PATH}" >> $GITHUB_ENV
@@ -138,8 +137,7 @@ jobs:
               quantize_dynamic(
                   model_input=model_path,
                   model_output=output_model_path,
-                  weight_type=QuantType.QUInt8,
-                  optimize_model=True
+                  weight_type=QuantType.QUInt8
               )
               print('[QUANTIZATION COMPLETE]')
 
