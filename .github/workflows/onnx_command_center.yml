@@ -56,10 +56,10 @@ jobs:
             echo "NVIDIA Driver not found. Software runners will execute available providers."
           fi
 
-      - name: Install ONNX Runtime GPU & Dependencies
+      - name: Install ONNX Runtime GPU & CUDA Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install onnx onnxruntime-gpu numpy
+          pip install onnx onnxruntime-gpu numpy nvidia-cublas-cu12 tensorrt
 
       - name: Execute ONNX Pipeline Command
         run: |
@@ -81,16 +81,20 @@ jobs:
           quant_mode = '${{ github.event.inputs.quant_mode }}'
           selected_ep = '${{ github.event.inputs.execution_provider }}'
 
+          # Fix 1: Auto-generate synthetic ONNX graph with lower IR version (IR 10, opset 19)
           if not os.path.exists(model_path):
               print(f'[INFO] Model target path non-existent: {model_path}')
-              print(f'[GENERATING] Constructing synthetic ONNX graph at: {model_path}')
+              print(f'[GENERATING] Constructing synthetic ONNX graph (IR v10) at: {model_path}')
               os.makedirs(os.path.dirname(model_path) or '.', exist_ok=True)
 
               input_tensor = helper.make_tensor_value_info('input_ids', TensorProto.FLOAT, [1, 128])
               output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 128])
               identity_node = helper.make_node('Identity', ['input_ids'], ['output'])
               graph = helper.make_graph([identity_node], 'synthetic_sentinel_core', [input_tensor], [output_tensor])
-              model = helper.make_model(graph, producer_name='sentinel-ci-engine')
+              
+              # Set opset and ir_version explicitly for maximum compatibility
+              opset_imports = [helper.make_opsetid('', 19)]
+              model = helper.make_model(graph, producer_name='sentinel-ci-engine', opset_imports=opset_imports, ir_version=10)
               onnx.save(model, model_path)
               print('[SUCCESS] Synthetic model graph saved successfully.')
 
@@ -99,7 +103,7 @@ jobs:
           requested_ep_lower = selected_ep.lower()
 
           active_ep = ep_map.get(requested_ep_lower, 'CPUExecutionProvider')
-          print(f'=== Active Execution Provider: {active_ep} ===')
+          print(f'=== Requested Execution Provider: {active_ep} ===')
 
           provider_options = []
           if active_ep == 'TensorrtExecutionProvider':
@@ -134,8 +138,15 @@ jobs:
               print('[QUANTIZATION COMPLETE]')
 
           elif action == 'benchmark':
-              session = ort.InferenceSession(model_path, providers=providers)
-              print(f'[SESSION RUNNERS]: {session.get_providers()}')
+              # Fix 2: Safe session initialization with explicit fallback handling
+              try:
+                  session = ort.InferenceSession(model_path, providers=providers)
+              except Exception as e:
+                  print(f'[WARNING] Failed to initialize provider {active_ep}: {e}')
+                  print('[FALLBACK] Falling back to CPUExecutionProvider...')
+                  session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+
+              print(f'[ACTIVE SESSION PROVIDERS]: {session.get_providers()}')
 
               inputs = {}
               for inp in session.get_inputs():
