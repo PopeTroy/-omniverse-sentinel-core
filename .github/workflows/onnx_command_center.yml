@@ -10,12 +10,21 @@ on:
         type: choice
         options:
           - 'benchmark'
+          - 'quantize_int8'
           - 'validate_graph'
       model_path:
         description: 'Path to target .onnx model'
         required: true
         default: 'models/sentinel_core.onnx'
         type: string
+      quant_mode:
+        description: 'Quantization Type (for quantize_int8 action)'
+        required: true
+        default: 'dynamic'
+        type: choice
+        options:
+          - 'dynamic'
+          - 'static'
       execution_provider:
         description: 'Execution Provider'
         required: true
@@ -28,7 +37,6 @@ on:
 
 jobs:
   execute-onnx-command-gpu:
-    # Use 'ubuntu-latest' with GitHub GPU runners or specify your self-hosted GPU runner tag
     runs-on: ubuntu-latest
 
     steps:
@@ -39,14 +47,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
       - name: Verify GPU Availability
         run: |
           if command -v nvidia-smi &> /dev/null; then
             nvidia-smi
           else
-            echo "NVIDIA Driver not found. Ensure runner has GPU drivers installed."
+            echo "NVIDIA Driver not found. Falling back to available software runners."
           fi
 
       - name: Install ONNX Runtime GPU & Dependencies
@@ -54,20 +61,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install onnx onnxruntime-gpu numpy
 
-      - name: Execute GPU Benchmark
+      - name: Execute ONNX Pipeline Command
         run: |
           echo "Executing Action: ${{ github.event.inputs.action_type }}"
           echo "Target Model: ${{ github.event.inputs.model_path }}"
           echo "Execution Provider: ${{ github.event.inputs.execution_provider }}"
 
           python -c "
-          import onnx
-          import onnxruntime as ort
-          import numpy as np
+          import os
+          import sys
           import time
+          import onnx
+          import numpy as np
+          import onnxruntime as ort
+          from onnxruntime.quantization import (
+              quantize_dynamic,
+              quantize_static,
+              QuantType,
+              CalibrationDataReader,
+              QuantFormat,
+              CalibrationMethod
+          )
 
           action = '${{ github.event.inputs.action_type }}'
           model_path = '${{ github.event.inputs.model_path }}'
+          quant_mode = '${{ github.event.inputs.quant_mode }}'
           selected_ep = '${{ github.event.inputs.execution_provider }}'
 
           print(f'=== Available Execution Providers: {ort.get_available_providers()} ===')
@@ -91,26 +109,86 @@ jobs:
           providers = [(selected_ep, provider_options[0])] if provider_options else [selected_ep]
 
           if action == 'validate_graph':
+              if not os.path.exists(model_path):
+                  print(f'[ERROR] Model path does not exist: {model_path}')
+                  sys.exit(1)
               model = onnx.load(model_path)
               onnx.checker.check_model(model)
               print('[SUCCESS] ONNX Graph structure is valid.')
 
+          elif action == 'quantize_int8':
+              if not os.path.exists(model_path):
+                  print(f'[ERROR] Model path does not exist: {model_path}')
+                  sys.exit(1)
+
+              output_model_path = model_path.replace('.onnx', f'_{quant_mode}_int8.onnx')
+              print(f'[QUANTIZATION START] Mode: {quant_mode.upper()}')
+              print(f'Input Model: {model_path}')
+              print(f'Output Model: {output_model_path}')
+
+              if quant_mode == 'dynamic':
+                  quantize_dynamic(
+                      model_input=model_path,
+                      model_output=output_model_path,
+                      weight_type=QuantType.QUInt8,
+                      optimize_model=True
+                  )
+                  print('[QUANTIZATION COMPLETE] Dynamic INT8 model generated.')
+
+              elif quant_mode == 'static':
+                  class SyntheticCalibrationDataReader(CalibrationDataReader):
+                      def __init__(self, model_file, num_samples=20):
+                          session = ort.InferenceSession(model_file, providers=['CPUExecutionProvider'])
+                          self.enum_data = []
+                          for _ in range(num_samples):
+                              inputs = {}
+                              for inp in session.get_inputs():
+                                  shape = [dim if isinstance(dim, int) and dim > 0 else 1 for dim in inp.shape]
+                                  inputs[inp.name] = np.random.randn(*shape).astype(np.float32)
+                              self.enum_data.append(inputs)
+                          self.enum_data = iter(self.enum_data)
+
+                      def get_next(self):
+                          return next(self.enum_data, None)
+
+                  dr = SyntheticCalibrationDataReader(model_path)
+                  quantize_static(
+                      model_input=model_path,
+                      model_output=output_model_path,
+                      calibration_data_reader=dr,
+                      quant_format=QuantFormat.QDQ,
+                      activation_type=QuantType.QInt8,
+                      weight_type=QuantType.QInt8,
+                      calibrate_method=CalibrationMethod.MinMax
+                  )
+                  print('[QUANTIZATION COMPLETE] Static QDQ INT8 model generated.')
+
+              orig_size = os.path.getsize(model_path) / (1024 * 1024)
+              quant_size = os.path.getsize(output_model_path) / (1024 * 1024)
+              reduction = (1 - (quant_size / orig_size)) * 100
+
+              print('=== SIZE METRICS ===')
+              print(f'Original Model: {orig_size:.2f} MB')
+              print(f'Quantized Model: {quant_size:.2f} MB')
+              print(f'Compression Rate: {reduction:.2f}% size reduction')
+
           elif action == 'benchmark':
+              if not os.path.exists(model_path):
+                  print(f'[ERROR] Model path does not exist: {model_path}')
+                  sys.exit(1)
+
               session = ort.InferenceSession(model_path, providers=providers)
               print(f'[ACTIVE PROVIDER]: {session.get_providers()}')
 
-              # Prepare dummy input based on model signature
               inputs = {}
               for inp in session.get_inputs():
                   shape = [dim if isinstance(dim, int) and dim > 0 else 1 for dim in inp.shape]
                   inputs[inp.name] = np.random.randn(*shape).astype(np.float32)
 
-              # Warm-up runs (TensorRT builds/compiles execution engine on first run)
-              print('[WARMUP] Compiling TensorRT Engine / Warming CUDA context...')
+              print('[WARMUP] Compiling Execution Engine / Warming CUDA context...')
               for _ in range(10):
                   session.run(None, inputs)
 
-              # Timed Benchmark
               iterations = 100
               start = time.perf_counter()
               for _ in range(iterations):
@@ -118,7 +196,14 @@ jobs:
               end = time.perf_counter()
 
               avg_latency = ((end - start) / iterations) * 1000
-              print(f'[BENCHMARK COMPLETE]')
+              print('[BENCHMARK COMPLETE]')
               print(f'Total Time for {iterations} runs: {(end - start):.4f}s')
-              print(f'Average Inferences Latency: {avg_latency:.2f} ms')
+              print(f'Average Inference Latency: {avg_latency:.2f} ms')
           "
+
+      - name: Upload Quantized Artifact
+        if: github.event.inputs.action_type == 'quantize_int8'
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnx-quantized-model
+          path: models/*_int8.onnx
