@@ -1,0 +1,29 @@
+version: "2.0"
+onnx_runtime_clusters:
+  vision_perception:
+    model_count: 500
+    execution_provider: "TensorRTExecutionProvider"
+    precision: "fp16"
+    models:
+      - id: "yolov8_x_industry_sentinel"
+        path: "/models/onnx/yolov8x_fp16.onnx"
+        batch_size: 64
+      - id: "resnet101_anomaly_detector"
+        path: "/models/onnx/resnet101_anomaly.onnx"
+        batch_size: 128
+  nlp_embeddings:
+    model_count: 1000
+    execution_provider: "CUDAExecutionProvider"
+    precision: "int8"
+    models:
+      - id: "miniLM_L6_v2_fast_embed"
+        path: "/models/onnx/minilm_l6_int8.onnx"
+        batch_size: 256
+  time_series_telemetry:
+    model_count: 500
+    execution_provider: "TensorRTExecutionProvider"
+    precision: "fp32"
+    models:
+      - id: "lstm_sensor_watchdog"
+        path: "/models/onnx/lstm_watchdog.onnx"
+        batch_size: 512
