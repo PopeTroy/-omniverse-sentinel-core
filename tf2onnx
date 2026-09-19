@@ -1,0 +1,22 @@
+import tensorflow as tf
+import tf2onnx
+
+def export_tensorflow_to_onnx(output_path):
+    # Construct a lightweight Keras Sequential model
+    model = tf.keras.Sequential([
+        tf.keras.layers.InputLayer(input_shape=(128,), name='input_ids'),
+        tf.keras.layers.Dense(256, activation='relu'),
+        tf.keras.layers.Dense(128, name='output')
+    ])
+
+    input_signature = [tf.TensorSpec([None, 128], tf.float32, name='input_ids')]
+    
+    onnx_model, _ = tf2onnx.convert.from_keras(
+        model, 
+        input_signature=input_signature, 
+        opset=17
+    )
+
+    with open(output_path, "wb") as f:
+        f.write(onnx_model.SerializeToString())
+    print(f"[SUCCESS] TensorFlow model exported to ONNX at: {output_path}")
