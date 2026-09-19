@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # Central NIM LLM Microservice
+  nim-llm-reasoning:
+    image: nvcr.io/nim/nvidia/nemotron-4-340b-instruct:latest
+    container_name: nim-nemotron-340b
+    environment:
+      - NGC_API_KEY=${NGC_API_KEY}
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+    ports:
+      - "8000:8000"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # NeMo Retriever Embedding NIM
+  nim-retriever-embed:
+    image: nvcr.io/nim/nvidia/nv-embedqa-e5-v5:latest
+    container_name: nim-embedqa
+    environment:
+      - NGC_API_KEY=${NGC_API_KEY}
+      - CUDA_VISIBLE_DEVICES=4
+    ports:
+      - "8003:8000"
+    ipc: host
+
+  # NeMo Reranking NIM
+  nim-retriever-rerank:
+    image: nvcr.io/nim/nvidia/rerank-qa-mistral-4b:latest
+    container_name: nim-reranker
+    environment:
+      - NGC_API_KEY=${NGC_API_KEY}
+      - CUDA_VISIBLE_DEVICES=5
+    ports:
+      - "8004:8000"
+
+  # High-throughput Vector Engine for RAG Watchdogs
+  milvus-standalone:
+    image: milvusdb/milvus:v2.4.0
+    container_name: vector-db-sentinel
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+    ports:
+      - "19530:19530"
+
+  # Master Sentinel Execution Core
+  sentinel-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniverse-sentinel-master
+    depends_on:
+      - nim-llm-reasoning
+      - nim-retriever-embed
+      - milvus-standalone
+    environment:
+      - NIM_ENDPOINT=http://nim-llm-reasoning:8000/v1
+      - RAG_ENDPOINT=http://nim-retriever-embed:8000/v1
+    volumes:
+      - ./trt_cache:/app/trt_cache
+      - ./models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
