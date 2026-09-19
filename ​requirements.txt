@@ -1,4 +1,6 @@
-onnxruntime-gpu>=1.18.0
+onnx
+onnxruntime-gpu
+numpy
 nvidia-nemo-retriever
 httpx>=0.27.0
 pydantic>=2.7.0
