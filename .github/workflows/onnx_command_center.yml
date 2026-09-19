@@ -1,0 +1,124 @@
+name: ONNX Model Command Center (GPU / TensorRT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action_type:
+        description: 'Select ONNX Action'
+        required: true
+        default: 'benchmark'
+        type: choice
+        options:
+          - 'benchmark'
+          - 'validate_graph'
+      model_path:
+        description: 'Path to target .onnx model'
+        required: true
+        default: 'models/sentinel_core.onnx'
+        type: string
+      execution_provider:
+        description: 'Execution Provider'
+        required: true
+        default: 'TensorRTExecutionProvider'
+        type: choice
+        options:
+          - 'TensorRTExecutionProvider'
+          - 'CUDAExecutionProvider'
+          - 'CPUExecutionProvider'
+
+jobs:
+  execute-onnx-command-gpu:
+    # Use 'ubuntu-latest' with GitHub GPU runners or specify your self-hosted GPU runner tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Verify GPU Availability
+        run: |
+          if command -v nvidia-smi &> /dev/null; then
+            nvidia-smi
+          else
+            echo "NVIDIA Driver not found. Ensure runner has GPU drivers installed."
+          fi
+
+      - name: Install ONNX Runtime GPU & Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install onnx onnxruntime-gpu numpy
+
+      - name: Execute GPU Benchmark
+        run: |
+          echo "Executing Action: ${{ github.event.inputs.action_type }}"
+          echo "Target Model: ${{ github.event.inputs.model_path }}"
+          echo "Execution Provider: ${{ github.event.inputs.execution_provider }}"
+
+          python -c "
+          import onnx
+          import onnxruntime as ort
+          import numpy as np
+          import time
+
+          action = '${{ github.event.inputs.action_type }}'
+          model_path = '${{ github.event.inputs.model_path }}'
+          selected_ep = '${{ github.event.inputs.execution_provider }}'
+
+          print(f'=== Available Execution Providers: {ort.get_available_providers()} ===')
+
+          # Configure Provider Options
+          provider_options = []
+          if selected_ep == 'TensorRTExecutionProvider':
+              provider_options = [{
+                  'trt_fp16_enable': True,
+                  'trt_engine_cache_enable': True,
+                  'trt_engine_cache_path': './trt_cache'
+              }]
+          elif selected_ep == 'CUDAExecutionProvider':
+              provider_options = [{
+                  'device_id': 0,
+                  'arena_extend_strategy': 'kNextPowerOfTwo',
+                  'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                  'do_copy_in_default_stream': True
+              }]
+
+          providers = [(selected_ep, provider_options[0])] if provider_options else [selected_ep]
+
+          if action == 'validate_graph':
+              model = onnx.load(model_path)
+              onnx.checker.check_model(model)
+              print('[SUCCESS] ONNX Graph structure is valid.')
+
+          elif action == 'benchmark':
+              session = ort.InferenceSession(model_path, providers=providers)
+              print(f'[ACTIVE PROVIDER]: {session.get_providers()}')
+
+              # Prepare dummy input based on model signature
+              inputs = {}
+              for inp in session.get_inputs():
+                  shape = [dim if isinstance(dim, int) and dim > 0 else 1 for dim in inp.shape]
+                  inputs[inp.name] = np.random.randn(*shape).astype(np.float32)
+
+              # Warm-up runs (TensorRT builds/compiles execution engine on first run)
+              print('[WARMUP] Compiling TensorRT Engine / Warming CUDA context...')
+              for _ in range(10):
+                  session.run(None, inputs)
+
+              # Timed Benchmark
+              iterations = 100
+              start = time.perf_counter()
+              for _ in range(iterations):
+                  session.run(None, inputs)
+              end = time.perf_counter()
+
+              avg_latency = ((end - start) / iterations) * 1000
+              print(f'[BENCHMARK COMPLETE]')
+              print(f'Total Time for {iterations} runs: {(end - start):.4f}s')
+              print(f'Average Inferences Latency: {avg_latency:.2f} ms')
+          "
