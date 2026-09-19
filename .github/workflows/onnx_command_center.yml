@@ -1,4 +1,4 @@
-name: ONNX Model Command Center (PyTorch / TF / GPU)
+Name: ONNX Model Command Center (PyTorch / TF / GPU)
 
 on:
   workflow_dispatch:
@@ -118,7 +118,8 @@ jobs:
                       model_path, 
                       input_names=['input_ids'], 
                       output_names=['output'], 
-                      opset_version=18,
+                      opset_version=17,
+                      dynamo=False,
                       dynamic_axes={
                           'input_ids': {0: 'batch_size'},
                           'output': {0: 'batch_size'}
@@ -135,7 +136,7 @@ jobs:
                       tf.keras.layers.Dense(128, name='output')
                   ])
                   spec = [tf.TensorSpec([None, 128], tf.float32, name='input_ids')]
-                  onnx_m, _ = tf2onnx.convert.from_keras(m, input_signature=spec, opset=18)
+                  onnx_m, _ = tf2onnx.convert.from_keras(m, input_signature=spec, opset=17)
                   with open(model_path, 'wb') as f:
                       f.write(onnx_m.SerializeToString())
                   print('[SUCCESS] TensorFlow model exported to ONNX successfully.')
@@ -149,11 +150,6 @@ jobs:
                   onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid('', 19)]), model_path)
                   print('[SUCCESS] Synthetic ONNX graph constructed successfully.')
 
-          # Ensure ONNX shape inference is clean before quantization
-          model = onnx.load(model_path)
-          inferred_model = onnx.shape_inference.infer_shapes(model)
-          onnx.save(inferred_model, model_path)
-
           available_eps = ort.get_available_providers()
           ep_map = {p.lower(): p for p in available_eps}
           active_ep = ep_map.get(selected_ep.lower(), 'CPUExecutionProvider')
@@ -162,7 +158,8 @@ jobs:
           providers = [active_ep]
 
           if action == 'validate_graph':
-              onnx.checker.check_model(inferred_model)
+              model = onnx.load(model_path)
+              onnx.checker.check_model(model)
               print('[SUCCESS] ONNX Graph structure is valid.')
 
           elif action == 'quantize_int8':
