@@ -1,0 +1,97 @@
+version: '3.8'
+
+secrets:
+  ngc_api_key:
+    file: ./secrets/ngc_api_key.txt
+  milvus_token:
+    file: ./secrets/milvus_token.txt
+
+networks:
+  sentinel_mesh:
+    driver: bridge
+
+volumes:
+  nim_model_cache:
+    driver: local
+  puter_fs_scratch:
+    driver: local
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Primary NVIDIA NIM LLM Inference Service (Nemotron 340B)
+  # ---------------------------------------------------------------------------
+  nim-llm-service:
+    image: nvcr.io/nim/nvidia/nemotron-4-340b-instruct:latest
+    container_name: nim-llm-service
+    restart: always
+    secrets:
+      - ngc_api_key
+    environment:
+      - NGC_API_KEY_FILE=/run/secrets/ngc_api_key
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+      - NIM_CACHE_PATH=/opt/nim/.cache
+    ports:
+      - "8000:8000"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - nim_model_cache:/opt/nim/.cache
+    networks:
+      - sentinel_mesh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/v1/health/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # 2. Ephemeral Sentinel Core App (Puter.fs + Dynamic GPU Scaling)
+  # ---------------------------------------------------------------------------
+  sentinel-app-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: sentinel-app-core
+    restart: unless-stopped
+    secrets:
+      - ngc_api_key
+      - milvus_token
+    environment:
+      - ENV=production
+      - NGC_API_KEY_FILE=/run/secrets/ngc_api_key
+      - MILVUS_TOKEN_FILE=/run/secrets/milvus_token
+      - NIM_LLM_ENDPOINT=http://nim-llm-service:8000/v1
+      - PUTER_FS_SCRATCH_DIR=/mnt/puter_fs
+      - TRT_MAX_WORKSPACE_MB=4096
+      - TRT_FP16_ENABLE=true
+    ports:
+      - "8080:8080"
+      - "9090:9090"  # Telemetry / Prometheus Exporter
+    volumes:
+      - puter_fs_scratch:/mnt/puter_fs
+    networks:
+      - sentinel_mesh
+    depends_on:
+      nim-llm-service:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # 3. Prometheus Telemetry Collector
+  # ---------------------------------------------------------------------------
+  sentinel-telemetry:
+    image: prom/prometheus:v2.45.0
+    container_name: sentinel-telemetry
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    networks:
+      - sentinel_mesh
