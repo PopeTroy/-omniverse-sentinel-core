@@ -65,7 +65,7 @@ jobs:
       - name: Configure CUDA / TensorRT Dynamic Library Paths
         run: |
           SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
-          NV_PATHS=$(find "$SITE_PACKAGES/nvidia" -type d -name "lib" 2>/dev/null | tr '\n' ':')
+          NV_PATHS=$(find "$SITE_PACKAGES/nvidia" -type d -name "lib" 2>/devnull | tr '\n' ':')
           echo "LD_LIBRARY_PATH=${NV_PATHS}${LD_LIBRARY_PATH}" >> $GITHUB_ENV
           echo "[INFO] Appended NVIDIA Shared Libraries to LD_LIBRARY_PATH"
 
