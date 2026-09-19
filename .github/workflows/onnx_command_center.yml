@@ -60,7 +60,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install onnx onnxruntime-gpu numpy nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 tensorrt torch tensorflow tf2onnx
+          pip install onnx onnxscript onnxruntime-gpu numpy nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 tensorrt torch tensorflow tf2onnx
 
       - name: Configure CUDA / TensorRT Dynamic Library Paths
         run: |
