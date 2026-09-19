@@ -1,4 +1,4 @@
-Name: ONNX Model Command Center (PyTorch / TF / GPU)
+name: ONNX Model Command Center (PyTorch / TF / GPU)
 
 on:
   workflow_dispatch:
