@@ -1,22 +1,33 @@
-import tensorflow as tf
-import tf2onnx
+elif source == 'tensorflow':
+    import tensorflow as tf
+    import tf2onnx
 
-def export_tensorflow_to_onnx(output_path):
-    # Construct a lightweight Keras Sequential model
-    model = tf.keras.Sequential([
-        tf.keras.layers.InputLayer(input_shape=(128,), name='input_ids'),
+    # Prevent TensorFlow from trying to initialize missing runner GPUs
+    tf.config.set_visible_devices([], 'GPU')
+
+    # Build Keras Sequential model (using shape instead of input_shape for Keras 3)
+    m = tf.keras.Sequential([
+        tf.keras.layers.InputLayer(shape=(128,), name='input_ids'),
         tf.keras.layers.Dense(256, activation='relu'),
         tf.keras.layers.Dense(128, name='output')
     ])
 
-    input_signature = [tf.TensorSpec([None, 128], tf.float32, name='input_ids')]
-    
-    onnx_model, _ = tf2onnx.convert.from_keras(
-        model, 
-        input_signature=input_signature, 
+    # Convert Keras model to a concrete tf.function to avoid Keras 3 layer lookup issues
+    @tf.function
+    def serve(input_ids):
+        return m(input_ids)
+
+    concrete_func = serve.get_concrete_function(
+        tf.TensorSpec([None, 128], tf.float32, name='input_ids')
+    )
+
+    # Convert concrete function to ONNX
+    onnx_m, _ = tf2onnx.convert.from_function(
+        concrete_func,
+        input_signature=[tf.TensorSpec([None, 128], tf.float32, name='input_ids')],
         opset=17
     )
 
-    with open(output_path, "wb") as f:
-        f.write(onnx_model.SerializeToString())
-    print(f"[SUCCESS] TensorFlow model exported to ONNX at: {output_path}")
+    with open(model_path, 'wb') as f:
+        f.write(onnx_m.SerializeToString())
+    print('[SUCCESS] TensorFlow model exported to ONNX successfully.')
