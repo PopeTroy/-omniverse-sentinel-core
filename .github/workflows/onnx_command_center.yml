@@ -18,6 +18,8 @@ on:
         default: 'advanced_ml'
         type: choice
         options:
+          - 'otsutsuki_aetheric'
+          - 'shinobi_tactics'
           - 'pid_controller'
           - 'advanced_ml'
           - 'dip_engine'
@@ -97,131 +99,148 @@ jobs:
 
           if not os.path.exists(model_path):
               print(f'[INFO] Exporting model graph using framework source/architecture: {source}')
-              import torch
-              import torch.nn as nn
 
-              if source == 'pid_controller':
-                  class PIDControllerModel(nn.Module):
-                      def __init__(self, kp=1.2, ki=0.5, kd=0.1):
-                          super().__init__()
-                          self.gains = nn.Parameter(torch.tensor([kp, ki, kd], dtype=torch.float32), requires_grad=False)
-                          self.fc = nn.Linear(3, 16)
-                          self.out = nn.Linear(16, 1)
-
-                      def forward(self, x):
-                          # x shape: [batch, 3] -> (error, integral, derivative)
-                          pid_calc = x * self.gains
-                          feat = torch.relu(self.fc(pid_calc))
-                          return self.out(feat)
-
-                  m = PIDControllerModel()
-                  m.eval()
-                  dummy_input = torch.randn(1, 3, dtype=torch.float32)
-                  torch.onnx.export(
-                      m, dummy_input, model_path,
-                      input_names=['pid_inputs'], output_names=['control_signal'],
-                      opset_version=17, dynamo=False,
-                      dynamic_axes={'pid_inputs': {0: 'batch_size'}, 'control_signal': {0: 'batch_size'}}
-                  )
-                  print('[SUCCESS] PID Controller model exported to ONNX successfully.')
-
-              elif source == 'advanced_ml':
-                  class TransformerBlock(nn.Module):
-                      def __init__(self, d_model=64, nhead=4):
-                          super().__init__()
-                          self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True)
-                          self.norm1 = nn.LayerNorm(d_model)
-                          self.ffn = nn.Sequential(
-                              nn.Linear(d_model, d_model * 2),
-                              nn.ReLU(),
-                              nn.Linear(d_model * 2, d_model)
-                          )
-                          self.norm2 = nn.LayerNorm(d_model)
-
-                      def forward(self, x):
-                          attn_out, _ = self.attn(x, x, x)
-                          x = self.norm1(x + attn_out)
-                          ffn_out = self.ffn(x)
-                          return self.norm2(x + ffn_out)
-
-                  m = TransformerBlock()
-                  m.eval()
-                  dummy_input = torch.randn(1, 16, 64, dtype=torch.float32)
-                  torch.onnx.export(
-                      m, dummy_input, model_path,
-                      input_names=['sequence_embedding'], output_names=['context_vector'],
-                      opset_version=17, dynamo=False,
-                      dynamic_axes={'sequence_embedding': {0: 'batch_size'}, 'context_vector': {0: 'batch_size'}}
-                  )
-                  print('[SUCCESS] Advanced ML (Transformer Multi-Head Attention) exported to ONNX successfully.')
-
-              elif source == 'dip_engine':
-                  class DIPFilterEngine(nn.Module):
-                      def __init__(self):
-                          super().__init__()
-                          self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, padding=1)
-                          self.relu = nn.ReLU()
-                          self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-                          self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, padding=1)
-                          self.adapt_pool = nn.AdaptiveAvgPool2d((8, 8))
-
-                      def forward(self, x):
-                          x = self.pool(self.relu(self.conv1(x)))
-                          x = self.adapt_pool(self.relu(self.conv2(x)))
-                          return x
-
-                  m = DIPFilterEngine()
-                  m.eval()
-                  dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
-                  torch.onnx.export(
-                      m, dummy_input, model_path,
-                      input_names=['image_tensor'], output_names=['feature_map'],
-                      opset_version=17, dynamo=False,
-                      dynamic_axes={'image_tensor': {0: 'batch_size'}, 'feature_map': {0: 'batch_size'}}
-                  )
-                  print('[SUCCESS] Digital Image Processing (DIP) Engine exported to ONNX successfully.')
-
-              elif source == 'pytorch':
-                  class PyTorchModel(nn.Module):
-                      def __init__(self):
-                          super().__init__()
-                          self.net = nn.Sequential(nn.Linear(128, 256), nn.ReLU(), nn.Linear(256, 128))
-                      def forward(self, x):
-                          return self.net(x)
-
-                  m = PyTorchModel()
-                  m.eval()
-                  dummy_input = torch.randn(1, 128, dtype=torch.float32)
-                  torch.onnx.export(
-                      m, dummy_input, model_path,
-                      input_names=['input_ids'], output_names=['output'],
-                      opset_version=17, dynamo=False,
-                      dynamic_axes={'input_ids': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
-                  )
-                  print('[SUCCESS] Standard PyTorch model exported to ONNX successfully.')
-
-              elif source == 'tensorflow':
+              if source == 'tensorflow':
                   import tensorflow as tf
                   import tf2onnx
+
+                  tf.config.set_visible_devices([], 'GPU')
+
                   m = tf.keras.Sequential([
-                      tf.keras.layers.InputLayer(input_shape=(128,), name='input_ids'),
+                      tf.keras.layers.InputLayer(shape=(128,), name='input_ids'),
                       tf.keras.layers.Dense(256, activation='relu'),
                       tf.keras.layers.Dense(128, name='output')
                   ])
-                  spec = [tf.TensorSpec([None, 128], tf.float32, name='input_ids')]
-                  onnx_m, _ = tf2onnx.convert.from_keras(m, input_signature=spec, opset=17)
+
+                  @tf.function
+                  def serve(input_ids):
+                      return m(input_ids)
+
+                  concrete_func = serve.get_concrete_function(
+                      tf.TensorSpec([None, 128], tf.float32, name='input_ids')
+                  )
+
+                  onnx_m, _ = tf2onnx.convert.from_function(
+                      concrete_func,
+                      input_signature=[tf.TensorSpec([None, 128], tf.float32, name='input_ids')],
+                      opset=17
+                  )
+
                   with open(model_path, 'wb') as f:
                       f.write(onnx_m.SerializeToString())
                   print('[SUCCESS] TensorFlow model exported to ONNX successfully.')
 
               else:
-                  from onnx import helper, TensorProto
-                  input_tensor = helper.make_tensor_value_info('input_ids', TensorProto.FLOAT, [1, 128])
-                  output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 128])
-                  identity_node = helper.make_node('Identity', ['input_ids'], ['output'])
-                  graph = helper.make_graph([identity_node], 'synthetic_sentinel', [input_tensor], [output_tensor])
-                  onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid('', 19)]), model_path)
-                  print('[SUCCESS] Synthetic ONNX graph constructed successfully.')
+                  import torch
+                  import torch.nn as nn
+
+                  if source == 'pid_controller':
+                      class PIDControllerModel(nn.Module):
+                          def __init__(self, kp=1.2, ki=0.5, kd=0.1):
+                              super().__init__()
+                              self.gains = nn.Parameter(torch.tensor([kp, ki, kd], dtype=torch.float32), requires_grad=False)
+                              self.fc = nn.Linear(3, 16)
+                              self.out = nn.Linear(16, 1)
+
+                          def forward(self, x):
+                              pid_calc = x * self.gains
+                              feat = torch.relu(self.fc(pid_calc))
+                              return self.out(feat)
+
+                      m = PIDControllerModel()
+                      m.eval()
+                      dummy_input = torch.randn(1, 3, dtype=torch.float32)
+                      torch.onnx.export(
+                          m, dummy_input, model_path,
+                          input_names=['pid_inputs'], output_names=['control_signal'],
+                          opset_version=17, dynamo=False,
+                          dynamic_axes={'pid_inputs': {0: 'batch_size'}, 'control_signal': {0: 'batch_size'}}
+                      )
+                      print('[SUCCESS] PID Controller model exported to ONNX successfully.')
+
+                  elif source == 'advanced_ml':
+                      class TransformerBlock(nn.Module):
+                          def __init__(self, d_model=64, nhead=4):
+                              super().__init__()
+                              self.attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True)
+                              self.norm1 = nn.LayerNorm(d_model)
+                              self.ffn = nn.Sequential(
+                                  nn.Linear(d_model, d_model * 2),
+                                  nn.ReLU(),
+                                  nn.Linear(d_model * 2, d_model)
+                              )
+                              self.norm2 = nn.LayerNorm(d_model)
+
+                          def forward(self, x):
+                              attn_out, _ = self.attn(x, x, x)
+                              x = self.norm1(x + attn_out)
+                              ffn_out = self.ffn(x)
+                              return self.norm2(x + ffn_out)
+
+                      m = TransformerBlock()
+                      m.eval()
+                      dummy_input = torch.randn(1, 16, 64, dtype=torch.float32)
+                      torch.onnx.export(
+                          m, dummy_input, model_path,
+                          input_names=['sequence_embedding'], output_names=['context_vector'],
+                          opset_version=17, dynamo=False,
+                          dynamic_axes={'sequence_embedding': {0: 'batch_size'}, 'context_vector': {0: 'batch_size'}}
+                      )
+                      print('[SUCCESS] Advanced ML (Transformer Multi-Head Attention) exported to ONNX successfully.')
+
+                  elif source == 'dip_engine':
+                      class DIPFilterEngine(nn.Module):
+                          def __init__(self):
+                              super().__init__()
+                              self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, padding=1)
+                              self.relu = nn.ReLU()
+                              self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+                              self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, padding=1)
+                              self.adapt_pool = nn.AdaptiveAvgPool2d((8, 8))
+
+                          def forward(self, x):
+                              x = self.pool(self.relu(self.conv1(x)))
+                              x = self.adapt_pool(self.relu(self.conv2(x)))
+                              return x
+
+                      m = DIPFilterEngine()
+                      m.eval()
+                      dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
+                      torch.onnx.export(
+                          m, dummy_input, model_path,
+                          input_names=['image_tensor'], output_names=['feature_map'],
+                          opset_version=17, dynamo=False,
+                          dynamic_axes={'image_tensor': {0: 'batch_size'}, 'feature_map': {0: 'batch_size'}}
+                      )
+                      print('[SUCCESS] Digital Image Processing (DIP) Engine exported to ONNX successfully.')
+
+                  elif source == 'pytorch':
+                      class PyTorchModel(nn.Module):
+                          def __init__(self):
+                              super().__init__()
+                              self.net = nn.Sequential(nn.Linear(128, 256), nn.ReLU(), nn.Linear(256, 128))
+                          def forward(self, x):
+                              return self.net(x)
+
+                      m = PyTorchModel()
+                      m.eval()
+                      dummy_input = torch.randn(1, 128, dtype=torch.float32)
+                      torch.onnx.export(
+                          m, dummy_input, model_path,
+                          input_names=['input_ids'], output_names=['output'],
+                          opset_version=17, dynamo=False,
+                          dynamic_axes={'input_ids': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+                      )
+                      print('[SUCCESS] Standard PyTorch model exported to ONNX successfully.')
+
+                  else:
+                      from onnx import helper, TensorProto
+                      input_tensor = helper.make_tensor_value_info('input_ids', TensorProto.FLOAT, [1, 128])
+                      output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 128])
+                      identity_node = helper.make_node('Identity', ['input_ids'], ['output'])
+                      graph = helper.make_graph([identity_node], 'synthetic_sentinel', [input_tensor], [output_tensor])
+                      onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid('', 19)]), model_path)
+                      print('[SUCCESS] Synthetic ONNX graph constructed successfully.')
 
           available_eps = ort.get_available_providers()
           ep_map = {p.lower(): p for p in available_eps}
@@ -255,7 +274,6 @@ jobs:
 
               print(f'[ACTIVE SESSION PROVIDERS]: {session.get_providers()}')
 
-              # Generate shape-matched dummy input dynamically based on graph requirements
               inputs = {}
               for inp in session.get_inputs():
                   shape = [s if isinstance(s, int) and s > 0 else 1 for s in inp.shape]
